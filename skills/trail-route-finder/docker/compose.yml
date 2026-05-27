@@ -1,0 +1,15 @@
+services:
+  brouter:
+    build:
+      context: https://github.com/abrensch/brouter.git#master
+    image: trail-route-finder/brouter:local
+    container_name: trail-brouter
+    restart: unless-stopped
+    ports:
+      - "17777:17777"
+    volumes:
+      # Tiles: downloaded to the data dir by setup.sh (large, kept out of the plugin install).
+      - ${SEGMENTS_PATH:?run setup.sh first or pass --env-file <data_dir>/.env}:/segments4:ro
+      # Profile: bundled with the plugin. Single-file bind sidesteps a BRouter
+      # path-resolution bug where /customprofiles/* gets mangled.
+      - ${PROFILE_FILE:?run setup.sh first or pass --env-file <data_dir>/.env}:/profiles2/trail-hilly.brf:ro

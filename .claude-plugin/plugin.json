@@ -1,0 +1,13 @@
+{
+  "name": "trail-route-finder",
+  "version": "0.1.0",
+  "description": "Generate trail running loops around a starting point with a minimum elevation gain (D+) target. Uses self-hosted BRouter (round-trip on OSM path/track data) and IGN RGE ALTI 1m for accurate elevation. Outputs interactive HTML maps with IGN topo tiles plus GPX files. Step 2 pushes a chosen GPX to Garmin Connect via gccli.",
+  "author": {
+    "name": "Nicolas Boisseau",
+    "url": "https://github.com/nicolas-boisseau"
+  },
+  "homepage": "https://github.com/nicolas-boisseau/trail-route-finder",
+  "repository": "https://github.com/nicolas-boisseau/trail-route-finder",
+  "license": "MIT",
+  "keywords": ["trail-running", "running", "gpx", "elevation", "ign", "brouter", "garmin"]
+}

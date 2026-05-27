@@ -1,0 +1,14 @@
+{
+  "name": "nicolas-boisseau",
+  "owner": {
+    "name": "Nicolas Boisseau",
+    "url": "https://github.com/nicolas-boisseau"
+  },
+  "plugins": [
+    {
+      "name": "trail-route-finder",
+      "source": "./",
+      "description": "Generate trail running loops around a starting point with elevation gain targets. Self-hosted BRouter + IGN RGE ALTI 1m + Garmin Connect push."
+    }
+  ]
+}

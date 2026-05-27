@@ -1,0 +1,4 @@
+requests>=2.31
+gpxpy>=1.6
+folium>=0.16
+shapely>=2.0

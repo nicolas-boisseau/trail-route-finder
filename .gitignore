@@ -1,0 +1,18 @@
+# Runtime data (lives in $TRAIL_ROUTE_FINDER_DATA, not in the repo)
+**/segments4/*.rd5
+**/.venv/
+**/output/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
