@@ -1,0 +1,38 @@
+{
+  "name": "libourne",
+  "label": "Libourne et alentours (Gironde / Périgord)",
+  "starts": [
+    {
+      "address": "Moulon, Gironde",
+      "label": "Moulon — côtes de l'Entre-deux-Mers, ~10 min voiture",
+      "drive_min": 10,
+      "expected_dplus_max_15km": 250
+    },
+    {
+      "address": "Fronsac, Gironde",
+      "label": "Fronsac — Côtes de Fronsac, ~10 min voiture",
+      "drive_min": 10,
+      "expected_dplus_max_15km": 200
+    },
+    {
+      "address": "Saint-Émilion",
+      "label": "Saint-Émilion — plateau et coteaux viticoles, ~15 min voiture",
+      "drive_min": 15,
+      "expected_dplus_max_15km": 180
+    }
+  ],
+  "stretch_starts": [
+    {
+      "address": "Aubeterre-sur-Dronne",
+      "label": "Aubeterre — vallée de la Dronne (Charente), ~45 min",
+      "drive_min": 45,
+      "expected_dplus_max_15km": 300
+    },
+    {
+      "address": "Brantôme-en-Périgord",
+      "label": "Brantôme — Périgord vert, ~1h",
+      "drive_min": 60,
+      "expected_dplus_max_15km": 500
+    }
+  ]
+}
