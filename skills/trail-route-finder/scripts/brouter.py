@@ -96,6 +96,57 @@ def round_trip(
     )
 
 
+def multi_route(
+    waypoints: list[tuple[float, float]],
+    profile: str = "trail-hilly",
+    base_url: str = BROUTER_URL,
+    timeout: int = 60,
+) -> Optional[BRouterTrack]:
+    """Standard (non-round-trip) routing through an ordered list of (lat, lon) waypoints.
+
+    Used by hilltop mode to force the loop through specific peaks/châteaux.
+    """
+    if len(waypoints) < 2:
+        return None
+    lonlats = "|".join(f"{lon:.6f},{lat:.6f}" for lat, lon in waypoints)
+    params = {
+        "lonlats": lonlats,
+        "profile": profile,
+        "alternativeidx": "0",
+        "format": "geojson",
+    }
+    try:
+        resp = requests.get(base_url, params=params, timeout=timeout)
+    except requests.RequestException as e:
+        log.warning("BRouter multi-route failed: %s", e)
+        return None
+    if resp.status_code != 200:
+        log.debug("BRouter multi-route %s: %s", resp.status_code, resp.text[:120])
+        return None
+    try:
+        data = resp.json()
+    except ValueError:
+        return None
+    feats = data.get("features") or []
+    if not feats:
+        return None
+    feat = feats[0]
+    coords = (feat.get("geometry") or {}).get("coordinates") or []
+    if len(coords) < 10:
+        return None
+    props = feat.get("properties") or {}
+    return BRouterTrack(
+        coordinates=[(float(c[0]), float(c[1]), float(c[2]) if len(c) > 2 else 0.0) for c in coords],
+        length_m=float(props.get("track-length", 0)),
+        ascend_filtered_m=float(props.get("filtered ascend", 0)),
+        ascend_plain_m=float(props.get("plain-ascend", 0)),
+        total_time_s=float(props.get("total-time", 0)),
+        direction_deg=0.0,
+        roundtrip_radius_m=0,
+        raw=data,
+    )
+
+
 def ping(base_url: str = BROUTER_URL, timeout: int = 5) -> bool:
     """Quick check that the BRouter server is responsive (any HTTP response counts)."""
     try:

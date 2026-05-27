@@ -23,6 +23,7 @@ from pathlib import Path
 import _paths
 import brouter
 import gpx_utils
+import hilltop_mode
 import ign_altimetry
 import presets as presets_mod
 import visualize
@@ -81,13 +82,21 @@ class FindResult:
     best_dplus: float  # max D+ found (even if below target)
 
 
-def find_from_location(loc, dplus_min, dist_min, dist_max, n_candidates, profile):
+def find_from_location(loc, dplus_min, dist_min, dist_max, n_candidates, profile, mode="roundtrip"):
     """Run the full sweep+filter pipeline for a single start. Returns FindResult.
 
     `enriched` is sorted desc by D+ and deduped, capped at n_candidates.
     `best_dplus` reflects the top D+ we *saw* (even below target) for diagnostics.
+
+    mode='roundtrip' uses BRouter's auto round-trip (good when terrain is uniformly hilly).
+    mode='hilltop'   forces routes through OSM hilltop POIs (essential in low-relief areas
+                     where round-trip places waypoints in valleys and misses the climbs).
     """
-    raw = sweep_candidates(loc.lat, loc.lon, dist_min, dist_max, profile)
+    target_km = (dist_min + dist_max) / 2
+    if mode == "hilltop":
+        raw = hilltop_mode.find_hilltop_loops(loc.lat, loc.lon, target_km, profile=profile)
+    else:
+        raw = sweep_candidates(loc.lat, loc.lon, dist_min, dist_max, profile)
     in_range = [t for t in raw if dist_min * 0.85 <= t.length_km <= dist_max * 1.15]
     log.info("In distance range: %d / %d", len(in_range), len(raw))
 
@@ -155,13 +164,16 @@ def print_summary(result: FindResult, html_path: Path):
     print(f"  HTML: xdg-open {html_path}")
 
 
-def run_preset(preset_name, dplus_min, dist_min, dist_max, n_candidates, profile, skip_stretch):
+def run_preset(preset_name, dplus_min, dist_min, dist_max, n_candidates, profile, skip_stretch, mode):
     p = presets_mod.load(preset_name)
-    print(f"Preset: {p.label}")
+    print(f"Preset: {p.label}  (mode={mode})")
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     base = _paths.output_dir() / f"preset_{p.name}_{ts}"
     base.mkdir(parents=True, exist_ok=True)
+
+    def _safe(name):
+        return "".join(c if c.isalnum() else "_" for c in name)
 
     all_results: list[FindResult] = []
     total_matched = 0
@@ -169,10 +181,10 @@ def run_preset(preset_name, dplus_min, dist_min, dist_max, n_candidates, profile
     for s in p.starts:
         print(f"\n→ Trying {s.label}")
         loc = geocode(s.address)
-        r = find_from_location(loc, dplus_min, dist_min, dist_max, n_candidates, profile)
+        r = find_from_location(loc, dplus_min, dist_min, dist_max, n_candidates, profile, mode)
         all_results.append(r)
         total_matched += len(r.enriched)
-        html = write_outputs(r, base / s.address.replace(",", "").replace(" ", "_").replace("/", "_"))
+        html = write_outputs(r, base / _safe(s.address))
         print_summary(r, html)
 
     if total_matched == 0 and not skip_stretch and p.stretch_starts:
@@ -180,10 +192,10 @@ def run_preset(preset_name, dplus_min, dist_min, dist_max, n_candidates, profile
         for s in p.stretch_starts:
             print(f"\n→ Trying {s.label}")
             loc = geocode(s.address)
-            r = find_from_location(loc, dplus_min, dist_min, dist_max, n_candidates, profile)
+            r = find_from_location(loc, dplus_min, dist_min, dist_max, n_candidates, profile, mode)
             all_results.append(r)
             total_matched += len(r.enriched)
-            html = write_outputs(r, base / s.address.replace(",", "").replace(" ", "_").replace("/", "_"))
+            html = write_outputs(r, base / _safe(s.address))
             print_summary(r, html)
 
     print(f"\n{'=' * 50}\nAggregate: {total_matched} matching candidate(s) across {len(all_results)} start(s)")
@@ -203,6 +215,11 @@ def main():
     ap.add_argument("--dist-max", type=float, required=True, help="Maximum loop distance in km")
     ap.add_argument("--n-candidates", type=int, default=5)
     ap.add_argument("--profile", default="trail-hilly")
+    ap.add_argument(
+        "--mode", choices=["roundtrip", "hilltop"], default="roundtrip",
+        help="roundtrip = BRouter auto-loop (default). hilltop = force routes through "
+             "OSM hilltop POIs — much better in low-relief areas (Gironde, Charente)."
+    )
     ap.add_argument("--no-stretch", action="store_true", help="Don't auto-try stretch starts when preset locals fail")
     ap.add_argument("--out-dir", default=None)
     ap.add_argument("-v", "--verbose", action="store_true")
@@ -217,11 +234,11 @@ def main():
 
     if args.preset:
         run_preset(args.preset, args.dplus_min, args.dist_min, args.dist_max,
-                   args.n_candidates, args.profile, args.no_stretch)
+                   args.n_candidates, args.profile, args.no_stretch, args.mode)
         return
 
     loc = geocode(args.address)
-    r = find_from_location(loc, args.dplus_min, args.dist_min, args.dist_max, args.n_candidates, args.profile)
+    r = find_from_location(loc, args.dplus_min, args.dist_min, args.dist_max, args.n_candidates, args.profile, args.mode)
 
     if not r.enriched:
         print(f"No candidate met D+ ≥ {args.dplus_min:.0f} m (best: {r.best_dplus:.0f} m).", file=sys.stderr)
