@@ -1,98 +1,127 @@
 ---
 name: trail-route-finder
-description: Generate trail running route candidates around a starting address with a minimum elevation gain target (D+). Uses self-hosted BRouter for round-trip generation over OpenStreetMap path/track data, and IGN RGE ALTI 1m for accurate elevation. Returns an HTML map with multiple candidate loops the user can review, plus GPX files. A second step pushes a chosen GPX to Garmin Connect via the gccli skill. Trigger when the user asks for running/trail routes, hilly loops, D+ training routes, dénivelé, or wants to discover new trails around a location.
+description: Generate trail running route candidates around a starting address with a minimum elevation gain target (D+). Four modes — roundtrip (BRouter auto-loop), hilltop (via OSM peaks/châteaux), segments (index climbing trails in a zone via Overpass + IGN RGE ALTI 1m), and chained (build loops by linking pre-indexed climbs). Outputs interactive HTML maps with IGN topo tiles plus GPX. A second step pushes a chosen GPX to Garmin Connect via gccli. Trigger when the user asks for running/trail routes, hilly loops, D+ training routes, dénivelé, climbing segments, or wants to discover new trails around a location.
 ---
 
 # trail-route-finder
 
-Generates trail running loops around a starting point with a target minimum elevation gain (D+). For trail runners who want variety beyond what Strava/Komoot/Garmin suggest.
+Generates trail running loops with elevation gain targets. Four modes, picked based on terrain.
 
-## Resolving paths
+## Resolving paths (do this once at the start of any session)
 
-This skill is a Claude Code plugin. Its bundled code lives at `${CLAUDE_PLUGIN_ROOT}/skills/trail-route-finder/` (or wherever Claude cached the plugin). Mutable runtime data lives at `${TRAIL_ROUTE_FINDER_DATA}` (defaults to `${CLAUDE_PLUGIN_DATA}` if set, else `~/.local/share/trail-route-finder/`).
-
-To resolve them at runtime:
 ```bash
-SKILL_DIR=$(dirname "$(find ${CLAUDE_PLUGIN_ROOT:-~/.claude/plugins} -name SKILL.md -path '*/trail-route-finder/*' -print -quit)")
-DATA_DIR="${TRAIL_ROUTE_FINDER_DATA:-${CLAUDE_PLUGIN_DATA:-$HOME/.local/share/trail-route-finder}}"
+DATA="${TRAIL_ROUTE_FINDER_DATA:-${CLAUDE_PLUGIN_DATA:-$HOME/.local/share/trail-route-finder}}"
+SKILL=$(find ~/.claude -name SKILL.md -path '*/trail-route-finder/*' -printf '%h\n' | head -1)
+PY="$DATA/.venv/bin/python"
 ```
 
-## First-time setup
+If `$DATA/.venv` does not exist: `bash "$SKILL/setup.sh"` (one-time, ~5 min).
 
-If `$DATA_DIR/.venv` does not exist, run setup once:
+## Start BRouter (idempotent)
+
 ```bash
-bash "$SKILL_DIR/setup.sh"
+cd "$SKILL/docker" && docker compose --env-file "$DATA/.env" up -d
 ```
-This downloads ~900 MB of France BRouter tiles, builds the Docker image, and creates the Python venv. Idempotent — safe to re-run.
 
-## Two-step workflow
+## Picking the mode
 
-**Step 1 — Find candidates**
+Use this decision tree. When uncertain, ask the user about terrain or try modes in this order: chained → hilltop → roundtrip.
 
-1. Ask the user for: starting address (or `lat,lon`), D+ minimum (meters), and a distance range in km (e.g. `10-15`).
-2. Ensure BRouter is up:
-   ```bash
-   cd "$SKILL_DIR/docker" && docker compose --env-file "$DATA_DIR/.env" up -d
-   ```
-3. Run the finder:
-   ```bash
-   "$DATA_DIR/.venv/bin/python" "$SKILL_DIR/scripts/find_routes.py" \
-       --address "<addr>" --dplus-min <m> --dist-min <km> --dist-max <km> -v
-   ```
-4. Output is written to `$DATA_DIR/output/run_<timestamp>/` (GPX files + `index.html`).
-5. Open the HTML for the user to review: `xdg-open "$DATA_DIR/output/run_<timestamp>/index.html"`
+1. **User wants a quick loop in clearly hilly terrain** (mountains, well-known trail running spots) → mode `roundtrip` (default)
+2. **Terrain is flat with isolated landmarks (châteaux, viewpoints)** → mode `hilltop`
+3. **Terrain is low-relief but locally known to have climbs** (Bordeaux viticole, Champagne, etc.) → **first run `find_segments.py`** on the zone (cached), then `find_chained.py` for routes
+4. **User explicitly asks for "the best climbs around X"** → `find_segments.py`, no chaining
 
-**Step 2 — Push chosen route to Garmin**
+## Mode commands
 
-After the user names which candidate to push:
+### roundtrip / hilltop (single-step)
+
 ```bash
-"$DATA_DIR/.venv/bin/python" "$SKILL_DIR/scripts/push_to_garmin.py" \
-    "$DATA_DIR/output/run_<timestamp>/route_<N>.gpx" \
-    --type trail_running [--send-to <device-id>]
-```
-This delegates to the `gccli` skill to create a Course on Garmin Connect.
-
-## Inputs
-
-- **address**: free-form French address, geocoded via BAN (api-adresse.data.gouv.fr). Or `lat,lon` decimal coordinates.
-- **dplus-min**: minimum positive elevation gain in meters (e.g. 600).
-- **dist-min / dist-max**: distance range in km (e.g. 10–15).
-- **n-candidates** (optional, default 5): how many distinct candidates to return.
-
-## Architecture
-
-```
-geocode (BAN)
-    │
-    ▼
-sweep over (12 directions × 3 radii) → BRouter /brouter round-trip (engineMode=4)
-    │
-    ▼
-coarse filter on BRouter SRTM ascent estimate
-    │
-    ▼
-recompute precise D+ via IGN altimetry (RGE ALTI 1m)
-    │
-    ▼
-filter D+ ≥ target → geometric Jaccard dedupe → top N
-    │
-    ▼
-GPX files + folium HTML with IGN Plan + Scan25 tiles
+$PY "$SKILL/scripts/find_routes.py" \
+    --address "<addr>" \
+    --dplus-min <m> --dist-min <km> --dist-max <km> \
+    [--mode hilltop] [--preset <name>] [-v]
 ```
 
-## Notes
+Outputs `$DATA/output/run_<ts>/` (GPX + index.html). Show the HTML path to the user.
 
-- BRouter is self-hosted (Docker, port 17777) with mainland France tiles in `$DATA_DIR/segments4/`.
-- Custom routing profile `profiles/trail-hilly.brf` favors paths/tracks and zeroes out uphill cost so loops follow terrain rather than avoiding it.
-- IGN altimetry is free, rate-limited to ~5 req/s — the script throttles.
-- The radius factor in `find_routes.py` (`RADIUS_FACTOR = 0.14`) is empirical; loop perimeter ≈ 7 × roundTripDistance, but direction can swing the result ±50%.
+### segments discovery (one-time per zone, cacheable)
 
-## Tuning
+```bash
+$PY "$SKILL/scripts/find_segments.py" \
+    --address "<zone center>" --radius-km <r> [-v]
+```
 
-If candidates are too road-heavy, increase the `path_preference` in `trail-hilly.brf`. If they're too short on D+, widen the distance range or pick a higher-altitude start. The HTML shows D+/km — below 25 m/km is "flat", 40+ is hilly, 60+ is mountain.
+Outputs `$DATA/output/segments_<ts>/index.html` — colored map of every climbing trail. Use it when the user wants to see what climbs exist around them, before deciding on a route. The cache key is hashed from rounded (lat, lon, radius); subsequent runs are instant.
+
+### chained (build loop from segment index)
+
+```bash
+$PY "$SKILL/scripts/find_chained.py" \
+    --address "<loop start>" --zone-address "<segment-cache center>" \
+    --dist-min <km> --dist-max <km> --dplus-min <m> \
+    [--n-candidates 5] [-v]
+```
+
+`--zone-address` lets the user index a wide zone once (e.g. "Libourne", radius 8 km), then start loops from different points within it (Saint-Émilion, Fronsac, etc.) reusing the same cache.
+
+## Choosing the start point
+
+If the user gives a home address in a low-relief area (Bordeaux, plains), home-as-start often yields disappointing D+. Two paths:
+- Suggest a drive-to start point that's known to be hillier (Saint-Émilion, Fronsac for Libourne home; preset zones list candidates).
+- Or run with `--preset <name>` which auto-tries the preset's local starts and falls back to stretch starts.
+
+## Visualizing results
+
+After any successful run, open the HTML map:
+```bash
+xdg-open "$DATA/output/<run_tag>/index.html"
+```
+
+Tell the user what to look at: the IGN Scan25 layer toggle (top-right) for topo, the popups for D+ / distance / elevation profile.
+
+## Pushing to Garmin (only when user explicitly asks)
+
+```bash
+$PY "$SKILL/scripts/push_to_garmin.py" \
+    "$DATA/output/<run_tag>/route_<N>.gpx" \
+    --type trail_running --name "<course name>" \
+    [--send-to <device-id>]
+```
+
+Delegates to the gccli skill. Confirm with the user which candidate to push before running this.
+
+## What achievable D+ looks like
+
+Rough ceiling per 12-16 km loop, based on observed runs:
+
+| Zone | Mode roundtrip | Mode hilltop | Mode chained |
+|---|---|---|---|
+| Annecy / Alps | 400-700 m | (not needed) | (not needed) |
+| Libourne viticole | 250 m | 300 m | **~390 m** |
+| Libourne city center (plain) | 40 m | 80 m | 250 m |
+
+When a target seems unreachable, suggest:
+1. A drive-to start point in the same preset
+2. A wider distance range (e.g. 12-18 km instead of 12-16)
+3. A lower D+ target with honest framing about the local geography
+
+## Garmin barometric inflation
+
+User's Garmin watch (or Strava) often reports D+ ~25-35 % higher than the geometric D+ on low-relief terrain (barometric noise accumulates). If the user says "I usually do 375 m D+ on this 13 km route" and our computation says 290 m, that's likely the same route — just measured differently.
+
+## Tuning the segment thresholds
+
+In `scripts/segments.py`:
+- `MIN_DPLUS_M` (default 15) — raise for fewer / longer climbs; lower for short raidillons
+- `MIN_LENGTH_M` (default 100) — minimum climb length
+- `MIN_AVG_SLOPE_PCT` (default 4) — minimum average slope
+- `SAMPLE_STEP_M` (default 25) — IGN sample resolution
+
+After editing, re-run with `--force-refresh`. Lowering thresholds dramatically increases IGN calls.
 
 ## Limitations
 
-- France-only (BRouter tiles + IGN endpoint). Other countries need different tiles and an alternative elevation source.
-- Starting from a valley floor (lakes, river towns) makes high-D+ short loops physically impossible — the closest hills are too far.
-- BRouter doesn't *seek* elevation; it just doesn't avoid it. The 12-direction sweep is what discovers hilly loops.
+- France-only (IGN RGE ALTI 1m + BRouter France tiles). Other countries need different elevation source + tiles.
+- Coverage limited to OSM trail tags. Unmapped vineyard tracks won't appear.
+- Garmin push needs the gccli skill installed and authenticated (`gccli auth status`).
