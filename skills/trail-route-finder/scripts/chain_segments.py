@@ -97,10 +97,10 @@ def find_chained_routes(
     dist_min_km: float, dist_max_km: float,
     dplus_min_m: float = 0.0,
     n_candidates: int = 5,
-    max_combo_size: int = 4,
-    top_segments_to_consider: int = 18,
+    max_combo_size: int = 6,
+    top_segments_to_consider: int = 22,
     profile: str = "trail-hilly",
-    max_brouter_calls: int = 60,
+    max_brouter_calls: int = 120,
 ) -> list[ChainResult]:
     """Generate candidate loops by chaining climbing segments."""
     start_ll = (start_lon, start_lat)
