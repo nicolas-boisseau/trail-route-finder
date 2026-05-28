@@ -28,9 +28,10 @@ log = logging.getLogger(__name__)
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 USER_AGENT = "trail-route-finder/0.1 (https://github.com/nicolas-boisseau/trail-route-finder)"
 
-# Trail-runnable highways. We deliberately skip motorways/primary roads.
-# `service` is excluded (driveways, parking aisles) but `residential` is kept
-# in case the climb passes through a village — common in viticole areas.
+# Trail-runnable highways. Skip motorways/primary/service (busy/private).
+# `residential` is kept — in viticole France many named "Côte de X" or
+# "Route/Rue de X" climbs are tagged residential because they pass through
+# small hamlets, but they're routinely used by trail runners.
 _TRAIL_QUERY = """
 [out:json][timeout:120];
 (
@@ -41,15 +42,19 @@ _TRAIL_QUERY = """
   way["highway"="cycleway"](around:{r},{lat},{lon});
   way["highway"="unclassified"](around:{r},{lat},{lon});
   way["highway"="tertiary"](around:{r},{lat},{lon});
+  way["highway"="residential"](around:{r},{lat},{lon});
 );
 out geom;
 """
 
 # Sub-segment thresholds (tuned for low-relief viticole terrain).
-MIN_DPLUS_M = 25.0       # at least 25 m climb to count as a segment
-MIN_LENGTH_M = 150.0     # at least 150 m long
-MIN_AVG_SLOPE_PCT = 4.0  # at least 4% average slope (so ~50m climb in 1.25km is too gentle)
-SAMPLE_STEP_M = 50.0     # IGN sampling resolution
+# In Bordeaux vineyards, a real climb may be only 100-200m long at 10-15% —
+# perfectly trail-runnable. We catch them with low MIN_DPLUS_M; slope filter
+# still rejects flat noise.
+MIN_DPLUS_M = 15.0
+MIN_LENGTH_M = 100.0
+MIN_AVG_SLOPE_PCT = 4.0
+SAMPLE_STEP_M = 25.0     # finer sampling: catches short steep ramps that 50m smoothing would erase
 
 
 @dataclass
