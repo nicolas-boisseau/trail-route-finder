@@ -165,10 +165,11 @@ def find_chained_routes(
 
     results.sort(key=lambda r: -r.dplus_m)
 
-    # Dedupe by Jaccard overlap on raw track geometry
+    # Dedupe by Jaccard overlap on raw track geometry. Threshold 0.40 keeps
+    # variants that share the marquee climbs but differ in approach/return.
     kept: list[ChainResult] = []
     for r in results:
-        if any(gpx_utils.jaccard_overlap(r.track.coordinates, k.track.coordinates) >= 0.55 for k in kept):
+        if any(gpx_utils.jaccard_overlap(r.track.coordinates, k.track.coordinates) >= 0.40 for k in kept):
             continue
         kept.append(r)
         if len(kept) >= n_candidates:
