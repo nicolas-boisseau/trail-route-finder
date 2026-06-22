@@ -45,22 +45,27 @@ def get_elevations(points: list[tuple[float, float]]) -> list[float]:
         batch = points[i : i + MAX_POINTS_PER_REQ]
         lons = "|".join(f"{lon:.6f}" for lon, _ in batch)
         lats = "|".join(f"{lat:.6f}" for _, lat in batch)
-        _throttle()
-        resp = requests.get(
-            ENDPOINT,
-            params={
-                "lon": lons,
-                "lat": lats,
-                "resource": RESOURCE,
-                "delimiter": "|",
-                "indent": "false",
-                "measures": "false",
-                "zonly": "true",
-            },
-            timeout=30,
-        )
-        if resp.status_code != 200:
-            log.warning("IGN altimetry %s: %s", resp.status_code, resp.text[:200])
+        params = {
+            "lon": lons, "lat": lats, "resource": RESOURCE,
+            "delimiter": "|", "indent": "false", "measures": "false", "zonly": "true",
+        }
+        resp = None
+        for attempt in range(3):
+            _throttle()
+            try:
+                resp = requests.get(ENDPOINT, params=params, timeout=30)
+                if resp.status_code in (429, 503, 504):
+                    log.warning("IGN altimetry %s — retry %d/3", resp.status_code, attempt + 1)
+                    time.sleep(1.5 + attempt * 2)
+                    continue
+                break
+            except requests.RequestException as e:
+                log.warning("IGN altimetry error %s — retry %d/3", e, attempt + 1)
+                time.sleep(1.5 + attempt * 2)
+                resp = None
+        if resp is None or resp.status_code != 200:
+            code = resp.status_code if resp is not None else "no-response"
+            log.warning("IGN altimetry batch failed (%s); filling NaN", code)
             out.extend([float("nan")] * len(batch))
             continue
         try:

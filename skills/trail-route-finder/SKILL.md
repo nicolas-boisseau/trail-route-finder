@@ -1,6 +1,6 @@
 ---
 name: trail-route-finder
-description: Generate trail running route candidates around a starting address with a minimum elevation gain target (D+). Four modes — roundtrip (BRouter auto-loop), hilltop (via OSM peaks/châteaux), segments (index climbing trails in a zone via Overpass + IGN RGE ALTI 1m), and chained (build loops by linking pre-indexed climbs). Outputs interactive HTML maps with IGN topo tiles plus GPX. A second step pushes a chosen GPX to Garmin Connect via gccli. Trigger when the user asks for running/trail routes, hilly loops, D+ training routes, dénivelé, climbing segments, or wants to discover new trails around a location.
+description: Generate trail running route candidates around a starting address with a minimum elevation gain target (D+). Five modes — roundtrip (BRouter auto-loop), hilltop (via OSM peaks/châteaux), segments (index climbing trails in a zone via Overpass + IGN RGE ALTI 1m), chained (build loops by linking pre-indexed climbs), and hill-repeats (repeat climbs to pump D+ — auto by default when a chain falls short, or manual via --repeat-segments). Outputs interactive HTML maps with IGN topo tiles plus GPX. A second step pushes a chosen GPX to Garmin Connect via gccli. Trigger when the user asks for running/trail routes, hilly loops, D+ training routes, dénivelé, climbing segments, hill repeats, répétitions de côtes, or wants to discover new trails around a location.
 ---
 
 # trail-route-finder
@@ -65,6 +65,25 @@ $PY "$SKILL/scripts/find_chained.py" \
 
 `--zone-address` lets the user index a wide zone once (e.g. "Libourne", radius 8 km), then start loops from different points within it (Saint-Émilion, Fronsac, etc.) reusing the same cache.
 
+### hill-repeats (boost D+ via segment repetitions)
+
+**Auto-boost** is ON by default in `chained` mode whenever `--dplus-min` is set. When a base loop falls short of the target, the system tries one boost attempt on its steepest in-chain climb (adding reps that fit within `--dist-max × 1.15`). The `🔁` flag and `×N` annotations in the output indicate reps are active.
+
+Disable with `--no-hill-repeats` (e.g. when the user only wants pure single-pass loops).
+
+**Manual mode** — when the user names the climbs and reps explicitly:
+
+```bash
+$PY "$SKILL/scripts/find_chained.py" \
+    --address "<start>" --zone-address "<cache center>" \
+    --dist-max <km> \
+    --repeat-segments "<name1>:<reps1>, <name2>:<reps2>, ..."
+```
+
+Names are matched as case-insensitive substrings of OSM `way_name`. On ambiguous matches, the highest-D+ climb wins. Each rep = one full ascension; total ascensions = N, distance added = `(2N-1) × climb.length_m`, D+ added = `N × climb.dplus_m`.
+
+Example for a D+ session: `--repeat-segments "Église:4, Larsis:3, Côte de la Jeune:3"` → 4 ascensions on Route de l'Église, 3 on Chemin de Larsis, 3 on Route de la Côte de la Jeune Vigne.
+
 ## Choosing the start point
 
 If the user gives a home address in a low-relief area (Bordeaux, plains), home-as-start often yields disappointing D+. Two paths:
@@ -95,16 +114,17 @@ Delegates to the gccli skill. Confirm with the user which candidate to push befo
 
 Rough ceiling per 12-16 km loop, based on observed runs:
 
-| Zone | Mode roundtrip | Mode hilltop | Mode chained |
-|---|---|---|---|
-| Annecy / Alps | 400-700 m | (not needed) | (not needed) |
-| Libourne viticole | 250 m | 300 m | **~390 m** |
-| Libourne city center (plain) | 40 m | 80 m | 250 m |
+| Zone | Mode roundtrip | Mode hilltop | Mode chained | + Hill-repeats |
+|---|---|---|---|---|
+| Annecy / Alps | 400-700 m | (not needed) | (not needed) | (not needed) |
+| Libourne viticole | 250 m | 300 m | **~390 m** | up to ~600 m on 25 km |
+| Libourne city center (plain) | 40 m | 80 m | 250 m | not enough density to boost |
 
 When a target seems unreachable, suggest:
 1. A drive-to start point in the same preset
 2. A wider distance range (e.g. 12-18 km instead of 12-16)
 3. A lower D+ target with honest framing about the local geography
+4. Auto hill-repeats (already on by default) or manual reps via `--repeat-segments` — works when the gap is ≤ a few hundred meters and the zone has steep enough climbs in the chain
 
 ## Garmin barometric inflation
 

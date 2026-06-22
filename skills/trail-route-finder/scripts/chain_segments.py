@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import itertools
 import logging
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, field
 from typing import Optional
 
 import brouter
@@ -28,6 +29,12 @@ class ChainResult:
     climbs_used: list[seg_mod.Climb]
     dplus_m: float
     elevations: list[float]
+    # Maps climb.id → total ascents in the route. Defaults to 1 per climb in
+    # `climbs_used`. Populated when hill-repeats boost or manual mode adds reps.
+    reps_per_climb: dict = field(default_factory=dict)
+
+    def reps_for(self, climb: seg_mod.Climb) -> int:
+        return self.reps_per_climb.get(climb.id, 1)
 
 
 def _dist(p1: tuple[float, float], p2: tuple[float, float]) -> float:
@@ -91,6 +98,99 @@ def _quick_distance_estimate(
     return total
 
 
+def _build_waypoints(
+    start_lat: float, start_lon: float,
+    ordered_climbs: list[seg_mod.Climb],
+    reps_by_id: Optional[dict] = None,
+) -> list[tuple[float, float]]:
+    """Build the (lat, lon) waypoint list for a route through ordered climbs.
+
+    Each climb is traversed `reps_by_id[climb.id]` times (default 1).
+    Reps > 1 means: bot → top → bot → top → ... (N ascents, N-1 descents in between).
+    """
+    waypoints = [(start_lat, start_lon)]
+    for c in ordered_climbs:
+        bot, top = _segment_endpoints(c)
+        n = (reps_by_id or {}).get(c.id, 1)
+        for _ in range(n):
+            waypoints.append((bot[1], bot[0]))
+            waypoints.append((top[1], top[0]))
+    waypoints.append((start_lat, start_lon))
+    return waypoints
+
+
+def _boost_with_repeats(
+    base: ChainResult,
+    start_lat: float, start_lon: float,
+    target_dplus_m: float,
+    dist_max_km: float,
+    profile: str,
+) -> Optional[ChainResult]:
+    """Attempt to lift base.dplus_m to >= target_dplus_m by repeating one of its climbs.
+
+    Strategy: pick the most "D+-efficient" climb (highest D+ per meter of
+    repeat-distance), compute reps needed to close the gap, re-route via BRouter,
+    re-evaluate IGN D+. Returns None if no climb can close the gap within budget.
+    """
+    gap = target_dplus_m - base.dplus_m
+    if gap <= 0:
+        return None
+
+    budget_km = dist_max_km * 1.15
+    current_km = base.track.length_km
+
+    # Steepest first: each extra ascent gives `dplus_m` D+ at the cost of 2×length_m of
+    # extra distance (one descent back + one new ascent), so dplus/length is the ranker.
+    by_efficiency = sorted(
+        base.climbs_used,
+        key=lambda c: -c.dplus_m / max(c.length_m, 1.0),
+    )
+
+    for boost_climb in by_efficiency:
+        k_extra = math.ceil(gap / boost_climb.dplus_m)
+        extra_km = 2 * k_extra * boost_climb.length_m / 1000.0
+        if current_km + extra_km > budget_km:
+            # Not enough room; try the max number of extra reps that does fit
+            k_max = int((budget_km - current_km) // (2 * boost_climb.length_m / 1000.0))
+            if k_max < 1:
+                continue
+            k_extra = k_max
+
+        reps_by_id = {c.id: 1 for c in base.climbs_used}
+        reps_by_id[boost_climb.id] = 1 + k_extra
+
+        waypoints = _build_waypoints(start_lat, start_lon, base.climbs_used, reps_by_id)
+        t = brouter.multi_route(waypoints, profile=profile)
+        if t is None or t.length_km > budget_km:
+            continue
+
+        points = gpx_utils.resample_polyline(t.coordinates, step_m=25.0)
+        elevs = ign_altimetry.get_elevations(points)
+        dplus = ign_altimetry.compute_dplus(elevs, smoothing_threshold_m=5.0)
+        if dplus < target_dplus_m:
+            # The boost didn't quite get there (BRouter routed via different paths than
+            # the linear estimate assumed). Try the next climb anyway, but remember this
+            # as a fallback if nothing better is found — actually keep it simple and
+            # only return boosts that fully meet the target.
+            log.debug(
+                "  ↑ boost %s +%d reps yielded D+ %.0f m, still under target %d",
+                (boost_climb.way_name or "?")[:25], k_extra, dplus, int(target_dplus_m),
+            )
+            continue
+
+        log.info(
+            "  ↑ boost via %s ×%d: %.1f→%.1f km, D+ %.0f→%.0f m",
+            (boost_climb.way_name or "?")[:25], 1 + k_extra,
+            base.track.length_km, t.length_km, base.dplus_m, dplus,
+        )
+        return ChainResult(
+            track=t, climbs_used=list(base.climbs_used),
+            dplus_m=dplus, elevations=elevs,
+            reps_per_climb=reps_by_id,
+        )
+    return None
+
+
 def find_chained_routes(
     start_lat: float, start_lon: float,
     climbs_all: list[seg_mod.Climb],
@@ -101,8 +201,15 @@ def find_chained_routes(
     top_segments_to_consider: int = 30,
     profile: str = "trail-hilly",
     max_brouter_calls: int = 250,
+    auto_hill_repeats: bool = True,
 ) -> list[ChainResult]:
-    """Generate candidate loops by chaining climbing segments."""
+    """Generate candidate loops by chaining climbing segments.
+
+    When `auto_hill_repeats` is True and `dplus_min_m > 0`, base loops that
+    fall short of the D+ target get an automatic hill-repeats boost on their
+    steepest climb. This unlocks ratios above the long-loop plateau (~22 m/km
+    in Bordeaux viticole) by densifying climbs already in the chain.
+    """
     start_ll = (start_lon, start_lat)
 
     pool = _candidates_near(start_lat, start_lon, climbs_all, max_approach_km=dist_max_km * 0.45)
@@ -122,46 +229,42 @@ def find_chained_routes(
             seen_keys.add(key)
             ordered = _greedy_order(start_ll, list(combo))
             est = _quick_distance_estimate(start_ll, ordered) / 1000.0
-            # forgiving window before paying for BRouter
             if dist_min_km * 0.70 <= est <= dist_max_km * 1.25:
-                # quick D+ estimate from segments alone (lower bound)
                 est_dplus = sum(c.dplus_m for c in ordered)
                 survivors.append((ordered, est_dplus))
 
-    # Rank prefilter survivors by expected D+
     survivors.sort(key=lambda x: -x[1])
     survivors = survivors[:max_brouter_calls]
     log.info("Survived distance pre-filter: %d combos (capped to %d)", len(survivors), max_brouter_calls)
 
-    # Route + IGN-precise D+ each survivor
+    # Route + IGN + (optional) boost per survivor.
     results: list[ChainResult] = []
+    boost_threshold = dplus_min_m * 0.50  # don't boost routes way below target
     for i, (ordered, est_dplus) in enumerate(survivors):
-        waypoints = [(start_lat, start_lon)]
-        for c in ordered:
-            bot, top = _segment_endpoints(c)
-            waypoints.append((bot[1], bot[0]))
-            waypoints.append((top[1], top[0]))
-        waypoints.append((start_lat, start_lon))
-
+        waypoints = _build_waypoints(start_lat, start_lon, ordered)
         t = brouter.multi_route(waypoints, profile=profile)
         if t is None:
             continue
         if not (dist_min_km * 0.85 <= t.length_km <= dist_max_km * 1.15):
             log.debug("  [%d] OOB %.1f km — skip", i + 1, t.length_km)
             continue
-        # IGN-precise D+
+
         points = gpx_utils.resample_polyline(t.coordinates, step_m=25.0)
         elevs = ign_altimetry.get_elevations(points)
         dplus = ign_altimetry.compute_dplus(elevs, smoothing_threshold_m=5.0)
-        log.info(
-            "  [%d] %s: %.1f km · D+ %.0f m (est %.0f) · %s",
-            i + 1,
-            " → ".join((c.way_name or "?")[:18] for c in ordered),
-            t.length_km, dplus, est_dplus,
-            "KEEP" if dplus >= dplus_min_m else "below target",
-        )
+
+        names = " → ".join((c.way_name or "?")[:18] for c in ordered)
         if dplus >= dplus_min_m:
+            log.info("  [%d] %s: %.1f km · D+ %.0f m · KEEP", i + 1, names, t.length_km, dplus)
             results.append(ChainResult(track=t, climbs_used=ordered, dplus_m=dplus, elevations=elevs))
+        elif auto_hill_repeats and dplus_min_m > 0 and dplus >= boost_threshold:
+            log.info("  [%d] %s: %.1f km · D+ %.0f m · trying boost…", i + 1, names, t.length_km, dplus)
+            base = ChainResult(track=t, climbs_used=ordered, dplus_m=dplus, elevations=elevs)
+            boosted = _boost_with_repeats(base, start_lat, start_lon, dplus_min_m, dist_max_km, profile)
+            if boosted is not None:
+                results.append(boosted)
+        else:
+            log.debug("  [%d] %s: D+ %.0f below target — skip", i + 1, names, dplus)
 
     results.sort(key=lambda r: -r.dplus_m)
 
@@ -175,3 +278,61 @@ def find_chained_routes(
         if len(kept) >= n_candidates:
             break
     return kept
+
+
+def match_climb_by_name(name_pattern: str, climbs: list[seg_mod.Climb]) -> Optional[seg_mod.Climb]:
+    """Substring match (case-insensitive); among ties, pick the highest D+."""
+    pat = name_pattern.lower().strip()
+    if not pat:
+        return None
+    matches = [c for c in climbs if pat in (c.way_name or "").lower()]
+    if not matches:
+        return None
+    return max(matches, key=lambda c: c.dplus_m)
+
+
+def find_manual_repeat_route(
+    start_lat: float, start_lon: float,
+    name_to_reps: dict,
+    climbs_all: list[seg_mod.Climb],
+    profile: str = "trail-hilly",
+) -> Optional[ChainResult]:
+    """Build a single route doing N ascents on each named climb.
+
+    `name_to_reps` is {"<substring of way_name>": <total ascents (≥1)>}.
+    The system geocodes each name to the best-matching climb in the index,
+    orders them greedily by proximity from the start, and routes.
+    """
+    start_ll = (start_lon, start_lat)
+    matched: list[tuple[seg_mod.Climb, int]] = []
+    for name, reps in name_to_reps.items():
+        if reps < 1:
+            continue
+        c = match_climb_by_name(name, climbs_all)
+        if c is None:
+            log.warning("No climb matching '%s' — skipping", name)
+            continue
+        matched.append((c, reps))
+        log.info(
+            "Matched '%s' → %s (D+%dm, %dm, %.1f%%) × %d ascents",
+            name, c.way_name or "?", int(c.dplus_m), int(c.length_m), c.avg_slope_pct, reps,
+        )
+
+    if not matched:
+        return None
+
+    ordered = _greedy_order(start_ll, [c for c, _ in matched])
+    reps_by_id = {c.id: r for c, r in matched}
+
+    waypoints = _build_waypoints(start_lat, start_lon, ordered, reps_by_id)
+    t = brouter.multi_route(waypoints, profile=profile)
+    if t is None:
+        return None
+
+    points = gpx_utils.resample_polyline(t.coordinates, step_m=25.0)
+    elevs = ign_altimetry.get_elevations(points)
+    dplus = ign_altimetry.compute_dplus(elevs, smoothing_threshold_m=5.0)
+    return ChainResult(
+        track=t, climbs_used=ordered, dplus_m=dplus, elevations=elevs,
+        reps_per_climb=reps_by_id,
+    )

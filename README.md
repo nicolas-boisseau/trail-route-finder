@@ -10,6 +10,7 @@ Built for trail runners frustrated by the homogeneous suggestions of Strava / Ko
 | `hilltop` | Plain with isolated knolls (some viticole, Périgord) | Forces routes through OSM peaks / châteaux / viewpoints |
 | `segments` (discovery) | One-time per zone — **builds a local index of climbing trails** | Overpass + IGN scans every path/track, detects every contiguous ascending section ≥ 15 m D+ / 100 m / 4 % slope |
 | `chained` | **Low-relief / viticole** (Bordeaux, Champagne) | Picks the best climbs from the segment index and chains them into a loop |
+| `hill-repeats` 🔁 | **D+ training without inflating distance** | Repeats ascents on the steepest in-chain (auto) or named (manual) climbs. Auto-boost kicks in by default when a base loop falls short of `--dplus-min` |
 
 In the Gironde viticole, the segment+chain pipeline lifts the achievable D+ from ~250 m (roundtrip) to **~390 m on 14 km** by stringing together short steep ramps that the other modes miss.
 
@@ -99,7 +100,7 @@ $PY "$SKILL/scripts/find_segments.py" --address "Libourne" --radius-km 8 --force
 
 ## Mode 4 — `chained` (build loops from the segment index)
 
-The killer feature for viticole / low-relief areas. Picks climbing segments near the start point, tries 2-4-segment combinations, builds routes that pass through each climb's bottom → top via BRouter.
+The killer feature for viticole / low-relief areas. Picks climbing segments near the start point, tries 2-8 segment combinations, builds routes that pass through each climb's bottom → top via BRouter.
 
 ```bash
 $PY "$SKILL/scripts/find_chained.py" \
@@ -115,6 +116,36 @@ Sample output line:
 #1: 14.1 km · D+ 386 m · 27 m/km
     via: Route de la Côte de la Jeune Vigne → ? → Chemin de Larsis → Chemin de Badette
 ```
+
+## Mode 5 — `hill-repeats` 🔁 (boost D+ via segment repetitions)
+
+When the D+ target on a given distance exceeds what a single-pass chain can deliver in the zone, the system can repeat climbs. Two flavours, both invoked through `find_chained.py`:
+
+**Auto-boost (default when `--dplus-min` is set):** during the chained search, any base loop falling short of the D+ target gets one boost attempt on its steepest in-chain climb. Reps are computed to close the gap; if extra distance fits in `--dist-max × 1.15`, the boosted loop replaces the base.
+
+```bash
+$PY "$SKILL/scripts/find_chained.py" \
+    --address "Saint-Émilion" --zone-address "Saint-Émilion" --zone-radius-km 12 \
+    --dist-min 20 --dist-max 23 --dplus-min 580 \
+    --n-candidates 5
+# → #1: 26.4 km · D+ 621 m · 24 m/km 🔁
+#     via: ... → Route de l'Église → ? ×2 → ? → Route de Canterane
+```
+
+Disable with `--no-hill-repeats`.
+
+**Manual mode:** pick the climbs and reps yourself. Names are matched as case-insensitive substrings against `way_name`; on multiple hits, the climb with the highest D+ wins.
+
+```bash
+$PY "$SKILL/scripts/find_chained.py" \
+    --address "Saint-Émilion" --zone-address "Saint-Émilion" --zone-radius-km 12 \
+    --dist-max 25 \
+    --repeat-segments "Église:4, Larsis:3, Côte de la Jeune:3"
+# → #1: 26.1 km · D+ 660 m · 25 m/km 🔁
+#     via: Route de la Côte de  ×3 → Chemin de Larsis ×3 → Route de l'Église ×4
+```
+
+The 🔁 flag and `×N` annotation appear when reps are active. Each rep adds `climb.dplus_m` of D+ and `2 × climb.length_m` of distance — so steeper / shorter climbs give better D+ per km.
 
 ## Visualizing the result
 
